@@ -81,6 +81,14 @@ if GATEWAYS:
 # Enabled/Disable Zer0m0n tickbox on the submission page
 OPT_ZER0M0N = False
 
+# guacd daemon host address and port and client connection settings
+GUACD_HOST = '127.0.0.1'
+GUACD_PORT = 4822
+GUAC_PROTO = 'rdp'
+GUAC_PORT = 3389
+GUAC_USER = 'rdpuser'
+GUAC_PASS = 'rdpuserpass'
+
 # To disable comment support, change the below to False
 COMMENTS = True
 
