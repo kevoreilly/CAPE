@@ -8,7 +8,6 @@ import grp
 import json
 import logging.handlers
 import os.path
-import re
 import socket
 import stat
 import subprocess
@@ -34,7 +33,7 @@ def run(*args):
 def nic_available(interface):
     """Check if specified network interface is available."""
     try:
-        subprocess.check_call([settings.ifconfig, interface],
+        subprocess.check_call([settings.ip, "link", "show", interface],
                               stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE)
         return True
@@ -120,7 +119,6 @@ def forward_enable(src, dst, ipaddr):
     # -A FORWARD -i virbr0 -j REJECT --reject-with icmp-port-unreachable
     run(settings.iptables, "-D", "FORWARD", "-i", src, "-j", "REJECT")
     run(settings.iptables, "-D", "FORWARD", "-o", src, "-j", "REJECT")
-
     run(settings.iptables, "-A", "FORWARD", "-i", src, "-o", dst,
         "--source", ipaddr, "-j", "ACCEPT")
 
@@ -198,9 +196,9 @@ def inetsim_disable(ipaddr, inetsim_ip, dns_port, resultserver_port):
         print ste
 
 
-def tor_enable(ipaddr, resultserver_port, dns_port, proxy_port):
-    """Enable hijacking of all traffic and send it to TOR."""
-    log.info("Enabling tor route.")
+def socks5_enable(ipaddr, resultserver_port, dns_port, proxy_port):
+    """Enable hijacking of all traffic and send it to socks5."""
+    log.info("Enabling socks route.")
     run(settings.iptables, "-t", "nat", "-I", "PREROUTING", "--source", ipaddr,
         "-p", "tcp", "--syn", "!", "--dport", resultserver_port, "-j", "REDIRECT",
         "--to-ports", proxy_port)
@@ -222,9 +220,9 @@ def tor_enable(ipaddr, resultserver_port, dns_port, proxy_port):
         print ste
 
 
-def tor_disable(ipaddr, resultserver_port, dns_port, proxy_port):
-    """Enable hijacking of all traffic and send it to TOR."""
-    log.info("Disabling tor route.")
+def socks5_disable(ipaddr, resultserver_port, dns_port, proxy_port):
+    """Enable hijacking of all traffic and send it to socks5."""
+    log.info("Disabling socks route.")
     run(settings.iptables, "-t", "nat", "-D", "PREROUTING", "--source", ipaddr,
         "-p", "tcp", "--syn", "!", "--dport", resultserver_port, "-j", "REDIRECT",
         "--to-ports", proxy_port)
@@ -282,8 +280,8 @@ handlers = {
     "srcroute_disable": srcroute_disable,
     "inetsim_enable": inetsim_enable,
     "inetsim_disable": inetsim_disable,
-    "tor_enable": tor_enable,
-    "tor_disable": tor_disable,
+    "socks5_enable": socks5_enable,
+    "socks5_disable": socks5_disable,
     "drop_enable": drop_enable,
     "drop_disable": drop_disable,
 }
@@ -294,8 +292,6 @@ if __name__ == "__main__":
                         help="Unix socket path")
     parser.add_argument("-g", "--group", default="cuckoo",
                         help="Unix socket group")
-    parser.add_argument("--ifconfig", default="/sbin/ifconfig",
-                        help="Path to ifconfig")
     parser.add_argument("--systemctl", default="/bin/systemctl",
                         help="Systemctl wrapper script for invoking OpenVPN")
     parser.add_argument("--iptables", default="/sbin/iptables",
@@ -314,9 +310,6 @@ if __name__ == "__main__":
             "Note that on CentOS you should provide --systemctl /bin/systemctl, "
             "rather than using the Ubuntu/Debian default /bin/systemctl."
         )
-
-    if not settings.ifconfig or not os.path.exists(settings.ifconfig):
-        sys.exit("The `ifconfig` binary is not available, eh?!")
 
     if not settings.iptables or not os.path.exists(settings.iptables):
         sys.exit("The `iptables` binary is not available, eh?!")

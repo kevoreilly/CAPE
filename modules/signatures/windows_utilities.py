@@ -4,6 +4,37 @@
 
 from lib.cuckoo.common.abstracts import Signature
 
+
+class UsesWindowsUtilitiesScheduler(Signature):
+    name = "uses_windows_utilities_to_create_scheduled_task"
+    description = "Uses Windows utilities for basic functionality"
+    severity = 2
+    confidence = 80
+    categories = ["commands", "lateral"]
+    authors = ["Cuckoo Technologies", "Kevin Ross"]
+    minimum = "1.3"
+    ttp = ["T1053"]
+
+    evented = True
+
+    def run(self):
+        utilities = [
+            "at ",
+            "at.exe",
+            "schtasks",
+        ]
+
+        ret = False
+        cmdlines = self.results["behavior"]["summary"]["executed_commands"]
+        for cmdline in cmdlines:
+            lower = cmdline.lower()
+            for utility in utilities:
+                if utility in lower:
+                    ret = True
+                    self.data.append({"command" : cmdline})
+
+        return ret
+
 class UsesWindowsUtilities(Signature):
     name = "uses_windows_utilities"
     description = "Uses Windows utilities for basic functionality"
@@ -12,12 +43,11 @@ class UsesWindowsUtilities(Signature):
     categories = ["commands", "lateral"]
     authors = ["Cuckoo Technologies", "Kevin Ross"]
     minimum = "1.3"
+
     evented = True
 
     def run(self):
         utilities = [
-            "at ",
-            "at.exe",
             "attrib",
             "copy",
             "dir ",
@@ -56,7 +86,6 @@ class UsesWindowsUtilities(Signature):
             "rwinsta",
             "sc ",
             "sc.exe",
-            "schtasks",
             "set ",
             "set.exe",
             "shutdown",
@@ -108,13 +137,14 @@ class SuspiciousCommandTools(Signature):
             "bitsadmin",
             "bginfo",
             "cacls",
+            "certutil",
             "csvde",
             "del ",
             "del.exe",
             "dsquery",
             "icacls",
             "klist",
-            "psexec",        
+            "psexec",
             "psfile",
             "psgetsid",
             "psinfo",
@@ -247,5 +277,142 @@ class WMICCommandSuspicious(Signature):
                     if argument in lower:
                         ret = True
                         self.data.append({"command" : cmdline})
+
+        return ret
+
+class AltersWindowsUtility(Signature):
+    name = "alters_windows_utility"
+    description = "Attempts to move, copy or rename a command line or scripting utility likely for evasion"
+    severity = 3
+    confidence = 100
+    categories = ["commands", "stealth", "evasion"]
+    authors = ["Kevin Ross"]
+    minimum = "1.3"
+    evented = True
+
+    def __init__(self, *args, **kwargs):
+        Signature.__init__(self, *args, **kwargs)
+        self.ret = False
+        self.utilities = [
+            "at.exe",
+            "bcdedit.exe",
+            "bitsadmin.exe",
+            "cmd.exe",
+            "cscript.exe",
+            "dir.exe",
+            "nbtstat.exe",
+            "net.exe",
+            "netsh.exe",
+            "nslookup.exe",
+            "powershell.exe",
+            "regsrv32.exe",
+            "sc.exe",
+            "schtasks.exe",
+            "systeminfo.exe",
+            "tasklist.exe",
+            "vssadmin.exe",
+            "wevutil.exe",
+            "wmic.exe",
+            "wscript.exe",
+            ]
+
+    filter_apinames = set(["CopyFileExA","CopyFileExW","MoveFileWithProgressW","MoveFileWithProgressTransactedW"])
+
+    def on_call(self, call, process):
+        self.ret = False
+        origfile = self.get_argument(call, "ExistingFileName")
+        destfile = self.get_argument(call, "NewFileName")
+        for utility in self.utilities:
+            lower = origfile.lower()
+            if lower.endswith(utility):
+                self.ret = True
+                self.data.append({"utility" : "source file %s destination file %s" % (origfile,destfile)})
+
+    def on_complete(self):
+        return self.ret
+
+class SuspiciousCertutilUse(Signature):
+    name = "suspicious_certutil_use"
+    description = "Suspicious use of certutil was detected"
+    severity = 3
+    confidence = 100
+    categories = ["commands"]
+    authors = ["Kevin Ross"]
+    minimum = "1.3"
+    evented = True
+    references = ["https://www.sentinelone.com/blog/malware-living-off-land-with-certutil/"]
+    ttp = ["T1140", "T1130", "T1105"]
+
+    def run(self):
+
+        ret = False
+        cmdlines = self.results["behavior"]["summary"]["executed_commands"]
+        for cmdline in cmdlines:
+            lower = cmdline.lower()
+            if "certutil" in lower and ("urlcache" in lower or "encode" in lower or "decode" in lower or "addstore" in lower):
+                ret = True
+                self.data.append({"command" : cmdline})
+
+        return ret
+
+class OverwritesAccessibilityUtility(Signature):
+    name = "overwrites_accessibility_utility"
+    description = "Overwrites an accessibility feature binary for Windows login bypass, persistence or privilege escalation"
+    severity = 3
+    confidence = 100
+    categories = ["evasion", "privilege_escalation", "persistence"]
+    authors = ["Kevin Ross"]
+    minimum = "1.3"
+    evented = True
+    ttp = ["T1015"]
+
+    def __init__(self, *args, **kwargs):
+        Signature.__init__(self, *args, **kwargs)
+        self.ret = False
+        self.utilities = [
+            "atbroker.exe",
+            "displayswitch.exe",
+            "magnify.exe",
+            "narrator.exe",
+            "osk.exe",
+            "sethc.exe",
+            "utilman.exe",
+            ]
+
+    filter_apinames = set(["CopyFileExA","CopyFileExW","MoveFileWithProgressW","MoveFileWithProgressTransactedW"])
+
+    def on_call(self, call, process):
+        self.ret = False
+        origfile = self.get_argument(call, "ExistingFileName")
+        destfile = self.get_argument(call, "NewFileName")
+        for utility in self.utilities:
+            lower = destfile.lower()
+            if lower.endswith(utility):
+                self.ret = True
+                self.data.append({"utility" : "source file %s destination file %s" % (origfile,destfile)})
+
+    def on_complete(self):
+        return self.ret
+
+class DotNETCSCBuild(Signature):
+    name = "dotnet_csc_build"
+    description = "Uses csc.exe C# compiler to build and execute code"
+    severity = 3
+    confidence = 20
+    categories = ["commands"]
+    authors = ["Kevin Ross"]
+    minimum = "1.3"
+    evented = True
+    references = ["https://docs.microsoft.com/en-us/dotnet/csharp/language-reference/compiler-options/command-line-building-with-csc-exe"]
+    ttp = ["T1500"]
+
+    def run(self):
+        ret = False
+        cmdlines = self.results["behavior"]["summary"]["executed_commands"]
+        for cmdline in cmdlines:
+            lower = cmdline.lower()
+            if "csc " in lower or "csc.exe" in lower:
+                ret = True
+                self.data.append({"command" : cmdline})
 
         return ret

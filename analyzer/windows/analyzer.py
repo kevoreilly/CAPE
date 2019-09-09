@@ -52,6 +52,7 @@ CAPE_DUMPED_LIST = []
 PROC_DUMPED_LIST = []
 UPLOADPATH_LIST = []
 PROCESS_LIST = []
+INJECT_LIST = []
 CRITICAL_PROCESS_LIST = []
 PROTECTED_PATH_LIST = []
 AUX_ENABLED = []
@@ -325,6 +326,30 @@ def dump_files():
     for file_path in FILES_LIST:
         dump_file(file_path)
 
+def upload_debugger_logs():
+    """Create a copy of the given file path."""
+    log_folder = PATHS["root"] + "\\debugger"
+    try:
+        if os.path.exists(log_folder):
+            log.info("Uploading debugger log at path \"%s\" ", log_folder.encode("utf-8", "replace"))
+        else:
+            log.warning("File at path \"%s\" does not exist, skip.",
+                        log_folder.encode("utf-8", "replace"))
+            return
+    except IOError as e:
+        log.warning("Unable to access file at path \"%s\": %s", log_folder.encode("utf-8", "replace"), e)
+        return
+
+    for root, dirs, files in os.walk(log_folder):
+        for file in files:
+            file_path = os.path.join(root, file)
+            upload_path = os.path.join("debugger", file)
+            try:
+                upload_to_host(file_path, upload_path, False)
+            except (IOError, socket.error) as e:
+                log.error("Unable to upload dropped file at path \"%s\": %s",
+                          file_path.encode("utf-8", "replace"), e)
+
 class PipeHandler(Thread):
     """Pipe Handler.
 
@@ -352,6 +377,7 @@ class PipeHandler(Thread):
         global MONITORED_BITS
         global LASTINJECT_TIME
         global NUM_INJECTED
+        global ANALYSIS_TIMED_OUT
         try:
             data = ""
             response = "OK"
@@ -377,10 +403,10 @@ class PipeHandler(Thread):
 
                 break
 
-            if data and ANALYSIS_TIMED_OUT == False:
+            if data:
                 command = data.strip()
 
-                # Debug, Regular, Warning, or Critical information from CuckooMon.
+                # Debug, Regular, Warning, or Critical information from capemon.
                 if command.startswith("DEBUG:"):
                     log.debug(command[6:])
                 elif command.startswith("INFO:"):
@@ -438,7 +464,7 @@ class PipeHandler(Thread):
                         PROCESS_LIST.remove(pid)
 
                 elif command.startswith("INTEROP:"):
-                    if not MONITORED_DCOM:
+                    if not MONITORED_DCOM and ANALYSIS_TIMED_OUT == False:
                         MONITORED_DCOM = True
                         dcom_pid = pid_from_service_name("DcomLaunch")
                         if dcom_pid:
@@ -452,7 +478,7 @@ class PipeHandler(Thread):
                             KERNEL32.Sleep(2000)
 
                 elif command.startswith("WMI:"):
-                    if not MONITORED_WMI:
+                    if not MONITORED_WMI and ANALYSIS_TIMED_OUT == False:
                         MONITORED_WMI = True
                         si = subprocess.STARTUPINFO()
                         # STARTF_USESHOWWINDOW
@@ -491,7 +517,7 @@ class PipeHandler(Thread):
                             KERNEL32.Sleep(2000)
 
                 elif command.startswith("TASKSCHED:"):
-                    if not MONITORED_TASKSCHED:
+                    if not MONITORED_TASKSCHED and ANALYSIS_TIMED_OUT == False:
                         MONITORED_TASKSCHED = True
                         si = subprocess.STARTUPINFO()
                         si.dwFlags = 1      # STARTF_USESHOWWINDOW
@@ -514,7 +540,7 @@ class PipeHandler(Thread):
                             KERNEL32.Sleep(2000)
 
                 elif command.startswith("BITS:"):
-                    if not MONITORED_BITS:
+                    if not MONITORED_BITS and ANALYSIS_TIMED_OUT == False:
                         MONITORED_BITS = True
                         si = subprocess.STARTUPINFO()
                         # STARTF_USESHOWWINDOW
@@ -556,31 +582,32 @@ class PipeHandler(Thread):
                 # Switch the service type to own process behind its back so we
                 # can monitor the service more easily with less noise
                 elif command.startswith("SERVICE:"):
-                    servname = command[8:]
-                    si = subprocess.STARTUPINFO()
-                    # STARTF_USESHOWWINDOW
-                    si.dwFlags = 1
-                    # SW_HIDE
-                    si.wShowWindow = 0
-                    subprocess.call("sc config " + servname + " type= own", startupinfo=si)
-                    log.info("Announced starting service \"%s\"", servname)
+                    if ANALYSIS_TIMED_OUT == False:
+                        servname = command[8:]
+                        si = subprocess.STARTUPINFO()
+                        # STARTF_USESHOWWINDOW
+                        si.dwFlags = 1
+                        # SW_HIDE
+                        si.wShowWindow = 0
+                        subprocess.call("sc config " + servname + " type= own", startupinfo=si)
+                        log.info("Announced starting service \"%s\"", servname)
 
-                    if not MONITORED_SERVICES:
-                        # Inject into services.exe so we can monitor service creation
-                        # if tasklist previously failed to get the services.exe PID we'll be
-                        # unable to inject
-                        if SERVICES_PID:
-                            log.info("Attaching to Service Control Manager (services.exe - pid %d)", SERVICES_PID)
-                            servproc = Process(options=self.options,config=self.config,pid=SERVICES_PID,suspended=False)
-                            CRITICAL_PROCESS_LIST.append(int(SERVICES_PID))
-                            filepath = servproc.get_filepath()
-                            servproc.inject(injectmode=INJECT_QUEUEUSERAPC, interest=filepath, nosleepskip=True)
-                            LASTINJECT_TIME = datetime.now()
-                            servproc.close()
-                            KERNEL32.Sleep(1000)
-                            MONITORED_SERVICES = True
-                        else:
-                            log.error('Unable to monitor service %s' % (servname))
+                        if not MONITORED_SERVICES:
+                            # Inject into services.exe so we can monitor service creation
+                            # if tasklist previously failed to get the services.exe PID we'll be
+                            # unable to inject
+                            if SERVICES_PID:
+                                log.info("Attaching to Service Control Manager (services.exe - pid %d)", SERVICES_PID)
+                                servproc = Process(options=self.options,config=self.config,pid=SERVICES_PID,suspended=False)
+                                CRITICAL_PROCESS_LIST.append(int(SERVICES_PID))
+                                filepath = servproc.get_filepath()
+                                servproc.inject(injectmode=INJECT_QUEUEUSERAPC, interest=filepath, nosleepskip=True)
+                                LASTINJECT_TIME = datetime.now()
+                                servproc.close()
+                                KERNEL32.Sleep(1000)
+                                MONITORED_SERVICES = True
+                            else:
+                                log.error('Unable to monitor service %s' % (servname))
 
                 # For now all we care about is bumping up our LASTINJECT_TIME to account for long delays between
                 # injection and actual resume time where the DLL would have a chance to load in the new process
@@ -620,12 +647,14 @@ class PipeHandler(Thread):
                             KERNEL32.CloseHandle(event_handle)
 
                     PROCESS_LOCK.release()
-                # Handle notification of cuckoomon loading in a process
+                # Handle notification of capemon loading in a process
                 elif command.startswith("LOADED:"):
                     PROCESS_LOCK.acquire()
                     process_id = int(command[7:])
                     if process_id not in PROCESS_LIST:
                         add_pids(process_id)
+                    if process_id in INJECT_LIST:
+                        INJECT_LIST.remove(int(process_id))
                     PROCESS_LOCK.release()
                     NUM_INJECTED += 1
                     log.info("Monitor successfully loaded in process with pid %u.", process_id)
@@ -656,12 +685,14 @@ class PipeHandler(Thread):
                         if param.isdigit():
                             thread_id = int(param)
 
-                    if process_id:
+                    if process_id and ANALYSIS_TIMED_OUT == False:
                         if process_id not in (PID, PPID):
                             # We inject the process only if it's not being
                             # monitored already, otherwise we would generate
                             # polluted logs.
                             if process_id not in PROCESS_LIST:
+                                if process_id not in INJECT_LIST:
+                                    INJECT_LIST.append(int(process_id))
                                 # Open the process and inject the DLL.
                                 proc = Process(options=self.options,
                                                config=self.config,
@@ -669,9 +700,9 @@ class PipeHandler(Thread):
                                                thread_id=thread_id,
                                                suspended=suspended)
 
-                                filepath = proc.get_filepath()
+                                filepath = proc.get_filepath().encode('utf8', 'replace')
                                 # if it's a URL analysis, provide the URL to all processes as
-                                # the "interest" -- this will allow cuckoomon to see in the
+                                # the "interest" -- this will allow capemon to see in the
                                 # child browser process that a URL analysis is occurring
                                 if self.config.category == "file" or NUM_INJECTED > 1:
                                     interest = filepath
@@ -682,65 +713,11 @@ class PipeHandler(Thread):
                                 filename = os.path.basename(filepath)
                                 if SERVICES_PID and process_id == SERVICES_PID:
                                     CRITICAL_PROCESS_LIST.append(int(SERVICES_PID))
-
                                 log.info("Announced %s process name: %s pid: %d", "64-bit" if is_64bit else "32-bit", filename, process_id)
-
-                                # We want to prevent multiple injection attempts if one is already underway
-                                PROCESS_LOCK.acquire()
-                                add_pids(process_id)
-                                PROCESS_LOCK.release()
-                                NUM_INJECTED += 1
-
                                 if not in_protected_path(filename):
                                     res = proc.inject(INJECT_QUEUEUSERAPC, interest)
                                     LASTINJECT_TIME = datetime.now()
-                                proc.close()
-                        else:
-                            log.warning("Received request to inject Cuckoo "
-                                        "process with pid %d, skip", process_id)
-
-                elif command.startswith("DEBUGGER:"):
-                    # We parse the process ID.
-                    data = command[9:]
-                    process_id = thread_id = None
-                    if "," not in data:
-                        if data.isdigit():
-                            process_id = int(data)
-                    elif data.count(",") == 1:
-                        process_id, param = data.split(",")
-                        thread_id = None
-                        if process_id.isdigit():
-                            process_id = int(process_id)
-                        else:
-                            process_id = None
-                        if param.isdigit():
-                            thread_id = int(param)
-
-                    if process_id:
-                        if process_id not in (PID, PPID):
-                            # We inject the process only if it's not being
-                            # monitored already, otherwise we would generate
-                            # polluted logs.
-                            if process_id not in PROCESS_LIST:
-                                # Open the process and inject the DLL.
-                                proc = Process(options=self.options,
-                                               config=self.config,
-                                               pid=process_id,
-                                               thread_id=thread_id,
-                                               suspended=suspended)
-
-                                interest = proc.get_filepath()
-                                is_64bit = proc.is_64bit()
-                                filename = os.path.basename(interest)
-                                if SERVICES_PID and process_id == SERVICES_PID:
-                                    CRITICAL_PROCESS_LIST.append(int(SERVICES_PID))
-
-                                log.info("Announced %s process name: %s pid: %d", "64-bit" if is_64bit else "32-bit", filename, process_id)
-
-                                if not in_protected_path(filename):
-                                    res = proc.debug_inject(interest, childprocess=True)
-                                    log.info("Injected 32-bit process %s with 32-bit debugger dll: %s", filename, dll)
-                                    LASTINJECT_TIME = datetime.now()
+                                    NUM_INJECTED += 1
                                 proc.close()
                         else:
                             log.warning("Received request to inject Cuckoo "
@@ -986,8 +963,7 @@ class Analyzer:
         # We update the target according to its category. If it's a file, then
         # we store the path.
         if self.config.category == "file":
-            self.target = os.path.join(os.environ["TEMP"] + os.sep,
-                                       str(self.config.file_name))
+            self.target = os.path.join(os.environ["TEMP"] + os.sep, str(self.config.file_name))
         # If it's a URL, well.. we store the URL.
         else:
             self.target = self.config.target
@@ -1000,6 +976,13 @@ class Analyzer:
 
         # Dump all the notified files.
         dump_files()
+
+        # Copy the debugger log.
+        upload_debugger_logs()
+
+        # Report missed injections
+        for pid in INJECT_LIST:
+            log.warning("Monitor injection attempted but failed for process %d.", pid)
 
         # Hell yeah.
         log.info("Analysis completed.")
@@ -1018,6 +1001,7 @@ class Analyzer:
         global MONITOR_DLL_64
         global LOADER32
         global LOADER64
+        global ANALYSIS_TIMED_OUT
 
         log.debug("Starting analyzer from: %s", os.getcwd())
         log.debug("Storing results at: %s", PATHS["root"])
@@ -1072,6 +1056,13 @@ class Analyzer:
 
         # Initialize the analysis package.
         pack = package_class(self.options, self.config)
+
+        # Move the sample to the current working directory as provided by the
+        # task - one is able to override the starting path of the sample.
+        # E.g., for some samples it might be useful to run from %APPDATA%
+        # instead of %TEMP%.
+        if self.config.category == "file":
+            self.target = pack.move_curdir(self.target)
 
         # Initialize Auxiliary modules
         Auxiliary()
@@ -1264,11 +1255,12 @@ class Analyzer:
             for pid in PROCESS_LIST:
                 proc = Process(pid=pid)
                 if proc.is_alive() and not pid in CRITICAL_PROCESS_LIST and not proc.is_critical():
-                    log.info("Setting terminate event for process %d.", proc.pid)
                     try:
                         proc.set_terminate_event()
                     except:
+                        log.error("Unable to set terminate event for process %d.", proc.pid)
                         continue
+                    log.info("Terminate event set for process %d.", proc.pid)
                 if self.config.terminate_processes:
                     # Try to terminate remaining active processes.
                     # (This setting may render full system memory dumps less useful.)

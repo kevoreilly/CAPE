@@ -8,7 +8,7 @@ import shutil
 import logging
 import threading
 import Queue
-
+from datetime import datetime
 try:
     import re2 as re
 except ImportError:
@@ -27,7 +27,7 @@ from lib.cuckoo.core.guest import GuestManager
 from lib.cuckoo.core.plugins import list_plugins, RunAuxiliary, RunProcessing
 from lib.cuckoo.core.plugins import RunSignatures, RunReporting, GetFeeds
 from lib.cuckoo.core.resultserver import ResultServer
-from lib.cuckoo.core.rooter import rooter, vpns
+from lib.cuckoo.core.rooter import rooter, vpns, _load_socks5_operational
 
 try:
     import pefile
@@ -99,7 +99,8 @@ class AnalysisManager(threading.Thread):
         try:
             create_folder(folder=self.storage)
         except CuckooOperationalError:
-            log.error("Task #{0}: Unable to create analysis folder {1}".format(self.task.id, self.storage))
+            log.error("Task #{0}: Unable to create analysis folder {1}".format(
+                self.task.id, self.storage))
             return False
 
         return True
@@ -127,7 +128,8 @@ class AnalysisManager(threading.Thread):
         self.binary = os.path.join(CUCKOO_ROOT, "storage", "binaries", sha256)
 
         if os.path.exists(self.binary):
-            log.info("Task #{0}: File already exists at '{1}'".format(self.task.id, self.binary))
+            log.info("Task #{0}: File already exists at '{1}'".format(
+                self.task.id, self.binary))
         else:
             # TODO: do we really need to abort the analysis in case we are not
             # able to store a copy of the file?
@@ -177,12 +179,13 @@ class AnalysisManager(threading.Thread):
             # and try again.
             if not machine:
                 machine_lock.release()
-                log.debug("Task #{0}: no machine available yet".format(self.task.id))
+                log.debug(
+                    "Task #{0}: no machine available yet".format(self.task.id))
                 time.sleep(1)
             else:
                 log.info("Task #{0}: acquired machine {1} (label={2})".format(
-                             self.task.id, machine.name, machine.label)
-                        )
+                    self.task.id, machine.name, machine.label)
+                )
                 break
 
         self.machine = machine
@@ -221,7 +224,8 @@ class AnalysisManager(threading.Thread):
                     if hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
                         exports = []
                         for exported_symbol in pe.DIRECTORY_ENTRY_EXPORT.symbols:
-                            exports.append(re.sub(r'[^A-Za-z0-9_?@-]', '', exported_symbol.name))
+                            exports.append(
+                                re.sub(r'[^A-Za-z0-9_?@-]', '', exported_symbol.name))
                         options["exports"] = ",".join(exports)
                 except:
                     pass
@@ -239,28 +243,33 @@ class AnalysisManager(threading.Thread):
 
         log.info("Task #{0}: Starting analysis of {1} '{2}'".format(
                  self.task.id, self.task.category.upper(), self.task.target)
-                )
+                 )
 
         # Initialize the analysis folders.
         if not self.init_storage():
+            log.debug("Failed to initialize the analysis folder")
             return False
 
         if self.task.category in ["file", "pcap"]:
             # Check whether the file has been changed for some unknown reason.
             # And fail this analysis if it has been modified.
             if not self.check_file():
+                log.debug("check file")
                 return False
 
             # Store a copy of the original file.
             if not self.store_file():
+                log.debug("store file")
                 return False
 
         if self.task.category == "pcap":
             # symlink the "binary" to dump.pcap
             if hasattr(os, "symlink"):
-                os.symlink(self.binary, os.path.join(self.storage, "dump.pcap"))
+                os.symlink(self.binary, os.path.join(
+                    self.storage, "dump.pcap"))
             else:
-                shutil.copy(self.binary, os.path.join(self.storage, "dump.pcap"))
+                shutil.copy(self.binary, os.path.join(
+                    self.storage, "dump.pcap"))
             # create the logs/files directories as
             # normally the resultserver would do it
             dirnames = ["logs", "files", "aux"]
@@ -276,7 +285,8 @@ class AnalysisManager(threading.Thread):
             self.acquire_machine()
         except CuckooOperationalError as e:
             machine_lock.release()
-            log.error("Task #{0}: Cannot acquire machine: {1}".format(self.task.id, e))
+            log.error("Task #{0}: Cannot acquire machine: {1}".format(
+                self.task.id, e))
             return False
 
         # Generate the analysis configuration file.
@@ -287,6 +297,7 @@ class AnalysisManager(threading.Thread):
             ResultServer().add_task(self.task, self.machine)
         except Exception as e:
             machinery.release(self.machine.label)
+            log.exception(e)
             self.errors.put(e)
 
         aux = RunAuxiliary(task=self.task, machine=self.machine)
@@ -302,6 +313,7 @@ class AnalysisManager(threading.Thread):
             # Start the machine.
             machinery.start(self.machine.label)
 
+            self.socks5s = _load_socks5_operational()
             # Enable network routing.
             self.route_network()
 
@@ -341,7 +353,6 @@ class AnalysisManager(threading.Thread):
                     dump_path = get_memdump_path(self.task.id)
                     free_space_monitor()
                     machinery.dump_memory(self.machine.label, dump_path)
-
                 except NotImplementedError:
                     log.error("The memory dump functionality is not available "
                               "for the current machine manager.")
@@ -392,7 +403,7 @@ class AnalysisManager(threading.Thread):
             except CuckooMachineError as e:
                 log.error("Task #{0}: Unable to release machine {1}, reason "
                           "{2}. You might need to restore it manually.".format(
-                          self.task.id, self.machine.label, e))
+                              self.task.id, self.machine.label, e))
 
         return succeeded
 
@@ -403,8 +414,8 @@ class AnalysisManager(threading.Thread):
         # It will contain all the results generated by every processing
         # module available. Its structure can be observed through the JSON
         # dump in the analysis' reports folder. (If jsondump is enabled.)
-        results = { }
-        results["statistics"] = { }
+        results = {}
+        results["statistics"] = {}
         results["statistics"]["processing"] = list()
         results["statistics"]["signatures"] = list()
         results["statistics"]["reporting"] = list()
@@ -418,16 +429,18 @@ class AnalysisManager(threading.Thread):
         if self.task.category == "file" and self.cfg.cuckoo.delete_original:
             if not os.path.exists(self.task.target):
                 log.warning("Task #{0}: Original file does not exist anymore: "
-                            "'{1}': File not found.".format(self.task.id, self.task.target)
-                           )
+                            "'{1}': File not found.".format(
+                                self.task.id, self.task.target)
+                            )
             else:
                 try:
                     os.remove(self.task.target)
 
                 except OSError as e:
                     log.error("Task #{0}: Unable to delete original file at "
-                              "path '{1}': {2}".format(self.task.id, self.task.target, e)
-                             )
+                              "path '{1}': {2}".format(
+                                  self.task.id, self.task.target, e)
+                              )
 
         # If the target is a file and the user enabled the delete copy of
         # the binary option, then delete the copy.
@@ -435,7 +448,7 @@ class AnalysisManager(threading.Thread):
             if not os.path.exists(self.binary):
                 log.warning("Task #{0}: Copy of the original file does not exist anymore: '{1}': "
                             "File not found".format(self.task.id, self.binary)
-                           )
+                            )
             else:
                 try:
                     os.remove(self.binary)
@@ -444,8 +457,8 @@ class AnalysisManager(threading.Thread):
                               "'{1}': {2}".format(self.task.id, self.binary, e))
 
         log.info("Task #{0}: reports generation completed (path={1})".format(
-                    self.task.id, self.storage)
-                )
+            self.task.id, self.storage)
+        )
 
         return True
 
@@ -457,7 +470,8 @@ class AnalysisManager(threading.Thread):
             while True:
                 try:
                     success = self.launch_analysis()
-                except CuckooDeadMachine:
+                except CuckooDeadMachine as e:
+                    log.exception(e)
                     continue
 
                 break
@@ -470,7 +484,8 @@ class AnalysisManager(threading.Thread):
             # turn thrown an exception in the analysisinfo processing module.
             self.task = self.db.view_task(self.task.id) or self.task
 
-            log.debug("Task #{0}: Released database task with status {1}".format(self.task.id, success))
+            log.debug("Task #{0}: Released database task with status {1}".format(
+                self.task.id, success))
 
             if self.cfg.cuckoo.process_results:
                 self.process_results()
@@ -495,27 +510,32 @@ class AnalysisManager(threading.Thread):
 
                     os.symlink(self.storage, latest)
                 except OSError as e:
-                    log.warning("Task #{0}: Error pointing latest analysis symlink: {1}".format(self.task.id, e))
+                    log.warning("Task #{0}: Error pointing latest analysis symlink: {1}".format(
+                        self.task.id, e))
                 finally:
                     latest_symlink_lock.release()
 
-            log.info("Task #{0}: analysis procedure completed".format(self.task.id))
+            log.info(
+                "Task #{0}: analysis procedure completed".format(self.task.id))
         except Exception as e:
-            log.exception("Task #{0}: Failure in AnalysisManager.run: {1}".format(self.task.id, e))
+            log.exception(
+                "Task #{0}: Failure in AnalysisManager.run: {1}".format(self.task.id, e))
 
         active_analysis_count -= 1
 
     def route_network(self):
         """Enable network routing if desired."""
         # Determine the desired routing strategy (none, internet, VPN).
+
         if self.task.options:
             for option in self.task.options.split(","):
-                key, value = option.split("=")
-                if key == "route":
-                    self.route = value
-                    break
+                if "=" in option:
+                    key, value = option.split("=")
+                    if key == "route":
+                        self.route = value
+                        break
 
-        if self.route == "none" or self.route == "None" or self.route == "drop":
+        if self.route in ("none", "None", "drop"):
             self.interface = None
             self.rt_table = None
         elif self.route == "inetsim":
@@ -528,18 +548,8 @@ class AnalysisManager(threading.Thread):
         elif self.route in vpns:
             self.interface = vpns[self.route].interface
             self.rt_table = vpns[self.route].rt_table
-            #startup the configured vpn
-            rooter("vpn_enable", self.route)
-            timeout = 0
-            while timeout < 30:
-                if not rooter("nic_available", self.interface):
-                    time.sleep(1)
-                    timeout += 1
-                    log.info("Waiting for VPN interface '%s' to be enabled.",
-                              self.interface)
-                else:
-                    log.info("Enabled VPN interface '%s'", self.interface)
-                    break
+        elif self.route in self.socks5s:
+            self.interface = ""
         else:
             log.warning("Unknown network routing destination specified, "
                         "ignoring routing for this analysis: %r", self.route)
@@ -559,15 +569,37 @@ class AnalysisManager(threading.Thread):
             self.rt_table = None
 
         if self.route == "inetsim":
-            rooter("inetsim_enable", self.machine.ip, str(self.cfg.routing.inetsim_server),
-                str(self.cfg.routing.inetsim_dnsport), str(self.cfg.resultserver.port))
+            rooter(
+                "inetsim_enable", self.machine.ip,
+                str(self.cfg.routing.inetsim_server),
+                str(self.cfg.routing.inetsim_dnsport),
+                str(self.cfg.resultserver.port),
+            )
 
         if self.route == "tor":
-            rooter("tor_enable", self.machine.ip, str(self.cfg.resultserver.port),
-                str(self.cfg.routing.tor_dnsport), str(self.cfg.routing.tor_proxyport))
+            rooter(
+                "socks5_enable",
+                self.machine.ip,
+                str(self.cfg.resultserver.port),
+                str(self.cfg.routing.tor_dnsport),
+                str(self.cfg.routing.tor_proxyport)
+            )
 
-        if self.route == "none" or self.route == "None" or self.route == "drop":
-            rooter("drop_enable", self.machine.ip, str(self.cfg.resultserver.port))
+        if self.route in self.socks5s:
+            rooter(
+                "socks5_enable",
+                self.machine.ip,
+                str(self.cfg.resultserver.port),
+                str(self.socks5s[self.route]["dnsport"]),
+                str(self.socks5s[self.route]["port"])
+            )
+
+        if self.route in("none", "None", "drop"):
+            rooter(
+                "drop_enable",
+                self.machine.ip,
+                str(self.cfg.resultserver.port)
+            )
 
         if self.interface:
             rooter("forward_enable", self.machine.interface,
@@ -577,9 +609,6 @@ class AnalysisManager(threading.Thread):
 
         if self.rt_table:
             rooter("srcroute_enable", self.rt_table, self.machine.ip)
-
-        # Propagate the taken route to the database.
-        #self.db.set_route(self.task.id, self.route)
 
     def unroute_network(self):
         if self.interface:
@@ -595,15 +624,39 @@ class AnalysisManager(threading.Thread):
             time.sleep(1)
 
         if self.route == "inetsim":
-          rooter("inetsim_disable", self.machine.ip, self.cfg.routing.inetsim_server,
-                str(self.cfg.routing.inetsim_dnsport), str(self.cfg.resultserver.port))
+            rooter(
+                "inetsim_disable",
+                self.machine.ip,
+                self.cfg.routing.inetsim_server,
+                str(self.cfg.routing.inetsim_dnsport),
+                str(self.cfg.resultserver.port),
+            )
 
         if self.route == "tor":
-            rooter("tor_disable", self.machine.ip, str(self.cfg.resultserver.port),
-                str(self.cfg.routing.tor_dnsport), str(self.cfg.routing.tor_proxyport))
+            rooter(
+                "socks5_disable",
+                self.machine.ip,
+                str(self.cfg.resultserver.port),
+                str(self.cfg.routing.tor_dnsport),
+                str(self.cfg.routing.tor_proxyport),
+            )
 
-        if self.route == "none" or self.route == "None" or self.route == "drop":
-            rooter("drop_disable", self.machine.ip, str(self.cfg.resultserver.port))
+        if self.route in self.socks5s:
+            rooter(
+                "socks5_disable",
+                self.machine.ip,
+                str(self.cfg.resultserver.port),
+                str(self.socks5s[self.route]["dnsport"]),
+                str(self.socks5s[self.route]["port"])
+            )
+
+        if self.route in("none", "None", "drop"):
+            rooter(
+                "drop_disable",
+                self.machine.ip,
+                str(self.cfg.resultserver.port)
+            )
+
 
 class Scheduler:
     """Tasks Scheduler.
@@ -615,6 +668,7 @@ class Scheduler:
     take care of running the full analysis process and operating with the
     assigned analysis machine.
     """
+
     def __init__(self, maxcount=None):
         self.running = True
         self.cfg = Config()

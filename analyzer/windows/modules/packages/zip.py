@@ -25,6 +25,7 @@ class Zip(Package):
              ("SystemRoot", "system32", "wscript.exe"),
              ("SystemRoot", "system32", "rundll32.exe"),
              ("SystemRoot", "sysnative", "WindowsPowerShell", "v1.0", "powershell.exe"),
+             ("SystemRoot", "system32", "xpsrchvw.exe"),
             ]
     def extract_zip(self, zip_path, extract_path, password, recursion_depth):
         """Extracts a nested ZIP file.
@@ -95,7 +96,8 @@ class Zip(Package):
     def start(self, path):
         root = os.environ["TEMP"]
         password = self.options.get("password")
-        exe_regex = re.compile('(\.exe|\.dll|\.scr|\.msi|\.bat|\.lnk|\.js|\.jse|\.vbs|\.vbe|\.wsf)$',flags=re.IGNORECASE)
+        exe_regex = re.compile('(\.exe|\.scr|\.msi|\.bat|\.lnk|\.js|\.jse|\.vbs|\.vbe|\.wsf)$',flags=re.IGNORECASE)
+        dll_regex = re.compile('(\.dll|\.ocx)$',flags=re.IGNORECASE)
         zipinfos = self.get_infos(path)
         self.extract_zip(path, root, password, 0)
 
@@ -109,6 +111,11 @@ class Zip(Package):
                     if exe_regex.search(f.filename):
                         file_name = f.filename
                         break
+                if not file_name:
+                    for f in zipinfos:
+                        if dll_regex.search(f.filename):
+                            file_name = f.filename
+                            break
                 # Default to the first one if none found
                 file_name = file_name if file_name else zipinfos[0].filename
                 log.debug("Missing file option, auto executing: {0}".format(file_name))
@@ -129,16 +136,16 @@ class Zip(Package):
             wscript = self.get_path_app_in_path("wscript.exe")
             wscript_args = "\"{0}\"".format(file_path)
             return self.execute(wscript, wscript_args, file_path)
-        elif file_name.lower().endswith(".dll"):
+        elif file_name.lower().endswith((".dll", ".ocx")):
             rundll32 = self.get_path_app_in_path("rundll32.exe")
             function = self.options.get("function", "#1")
             arguments = self.options.get("arguments")
-            loadername = self.options.get("loader")
+            dllloader = self.options.get("dllloader")
             dll_args = "\"{0}\",{1}".format(file_path, function)
             if arguments:
                 dll_args += " {0}".format(arguments)
-            if loadername:
-                newname = os.path.join(os.path.dirname(rundll32), loadername)
+            if dllloader:
+                newname = os.path.join(os.path.dirname(rundll32), dllloader)
                 shutil.copy(rundll32, newname)
                 rundll32 = newname
             return self.execute(rundll32, dll_args, file_path)

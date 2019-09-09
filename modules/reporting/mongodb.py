@@ -38,7 +38,12 @@ class MongoDB(Report):
         db = self.options.get("db", "cuckoo")
 
         try:
-            self.conn = MongoClient(host, port)
+            self.conn = MongoClient( host,
+                                port=port,
+                                username=self.options.get("username", None),
+                                password=self.options.get("password", None),
+                                authSource=db
+                                )
             self.db = self.conn[db]
         except TypeError:
             raise CuckooReportError("Mongo connection port must be integer")
@@ -199,7 +204,7 @@ class MongoDB(Report):
 
         # Store the report and retrieve its object id.
         try:
-            self.db.analysis.save(report)
+            self.db.analysis.save(report, check_keys=False)
         except InvalidDocument as e:
             parent_key, psize = self.debug_dict_size(report)[0]
             if not self.options.get("fix_large_docs", False):
@@ -226,7 +231,7 @@ class MongoDB(Report):
                                 log.warn("results['%s']['%s'] deleted due to size: %s" % (parent_key, child_key, csize))
                                 del report[parent_key][child_key]
                         try:
-                            self.db.analysis.save(report)
+                            self.db.analysis.save(report, check_keys=False)
                             error_saved = False
                         except InvalidDocument as e:
                             parent_key, psize = self.debug_dict_size(report)[0]

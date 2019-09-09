@@ -20,118 +20,49 @@ except ImportError:
 
 from lib.cuckoo.common.abstracts import Signature
 
-class CmdlineCompsecEvasion(Signature):
-    name = "cmdline_comspec_evasion"
-    description = "Uses the %COMSPEC% environment variable to access the command line interpreter to evade detection"
+class CmdlineObfuscation(Signature):
+    name = "cmdline_obfuscation"
+    description = "Appears to use command line obfuscation"
     severity = 3
     categories = ["commands"]
     authors = ["Kevin Ross"]
-    authors = ["Cuckoo Technologies", "Kevin Ross"]
     minimum = "1.3"
     evented = True
+    references = ["https://www.fireeye.com/content/dam/fireeye-www/blog/pdfs/dosfuscation-report.pdf"]
 
     def run(self):
         ret = False
         cmdlines = self.results["behavior"]["summary"]["executed_commands"]
         for cmdline in cmdlines:
+            # using cmd.exe via comspec
             if "%comspec" in cmdline.lower():
-                    ret = True
-                    self.data.append({"command" : cmdline})
+                ret = True
+                self.data.append({"command" : cmdline})
 
-        return ret
+            # character obfuscation
+            elif "cmd" in cmdline.lower() and (cmdline.count("^") > 3 or cmdline.count("&") > 6 or cmdline.count("+") > 4 or cmdline.count("\"") > 8 or cmdline.count(";") > 6):
+                ret = True
+                self.data.append({"command" : cmdline})
 
-class CmdlineChracterObfsucation(Signature):
-    name = "cmdline_chracter_obfuscation"
-    description = "Appears to use character obfuscation in a command line"
-    severity = 3
-    categories = ["commands"]
-    authors = ["Kevin Ross"]
-    minimum = "1.3"
-    evented = True
+            # concatenation
+            elif "cmd" in cmdline.lower() and re.search('(%[^%]+%){4}', cmdline):
+                ret = True
+                self.data.append({"command" : cmdline})
 
-    def run(self):
-        ret = False
-        cmdlines = self.results["behavior"]["summary"]["executed_commands"]
-        for cmdline in cmdlines:
-            if "cmd" in cmdline.lower() and (cmdline.count("^") > 3 or cmdline.count("&") > 6 or cmdline.count("+") > 4 or cmdline.count("\"") > 8 or cmdline.count(";") > 6):
-                    ret = True
-                    self.data.append({"command" : cmdline})
+            # Set variables obfsucation
+            elif "cmd" in cmdline.lower() and cmdline.lower().count("set ") > 2:
+                ret = True
+                self.data.append({"command" : cmdline})
 
-        return ret
+            # Set call obfuscation
+            elif "cmd" in cmdline.lower() and "set " in cmdline.lower() and "call " in cmdline.lower():
+                ret = True
+                self.data.append({"command" : cmdline})
 
-class CmdlineConcatenationObfsucation(Signature):
-    name = "cmdline_concatenation_obfuscation"
-    description = "Appears to use adjacent environment variables for concatenation reassembly obfuscation in a command line"
-    severity = 3
-    categories = ["commands"]
-    authors = ["Kevin Ross"]
-    minimum = "1.3"
-    evented = True
-
-    def run(self):
-        ret = False
-        cmdlines = self.results["behavior"]["summary"]["executed_commands"]
-        for cmdline in cmdlines:
-            if "cmd" in cmdline.lower() and re.search('(%[^%]+%){4}', cmdline):
-                    ret = True
-                    self.data.append({"command" : cmdline})
-
-        return ret
-
-class CmdlineSetObfsucation(Signature):
-    name = "cmdline_set_obfuscation"
-    description = "Appears to use set to define variables in a command line likely for obfuscation"
-    severity = 3
-    categories = ["commands"]
-    authors = ["Kevin Ross"]
-    minimum = "1.3"
-    evented = True
-
-    def run(self):
-        ret = False
-        cmdlines = self.results["behavior"]["summary"]["executed_commands"]
-        for cmdline in cmdlines:
-            if "cmd" in cmdline.lower() and cmdline.lower().count("set ") > 2:
-                    ret = True
-                    self.data.append({"command" : cmdline})
-
-        return ret
-
-class CmdlineSetCallObfsucation(Signature):
-    name = "cmdline_setcall_obfuscation"
-    description = "Appears to use set and call to define a variable in a command line likely for obfuscation"
-    severity = 3
-    categories = ["commands"]
-    authors = ["Kevin Ross"]
-    minimum = "1.3"
-    evented = True
-
-    def run(self):
-        ret = False
-        cmdlines = self.results["behavior"]["summary"]["executed_commands"]
-        for cmdline in cmdlines:
-            if "cmd" in cmdline.lower() and "set " in cmdline.lower() and "call " in cmdline.lower():
-                    ret = True
-                    self.data.append({"command" : cmdline})
-
-        return ret
-
-class CmdlineSetForLoopObfsucation(Signature):
-    name = "cmdline_set_forloop_obfuscation"
-    description = "Appears to use a for loop in a command line likely for obfuscation"
-    severity = 3
-    categories = ["commands"]
-    authors = ["Kevin Ross"]
-    minimum = "1.3"
-    evented = True
-
-    def run(self):
-        ret = False
-        cmdlines = self.results["behavior"]["summary"]["executed_commands"]
-        for cmdline in cmdlines:
-            if "cmd" in cmdline.lower() and "set " in cmdline.lower() and "for " in cmdline.lower():
-                    ret = True
-                    self.data.append({"command" : cmdline})
+            # for loop obfuscation
+            elif "cmd" in cmdline.lower() and "set " in cmdline.lower() and "for " in cmdline.lower():
+                ret = True
+                self.data.append({"command" : cmdline})
 
         return ret
 
@@ -236,7 +167,6 @@ class CommandLineHTTPLink(Signature):
 
         return ret
 
-    
 class CommandLineReversedHTTPLink(Signature):
     name = "cmdline_reversed_http_link"
     description = "A reversed HTTP/S link was seen in a script or command line"
@@ -317,5 +247,25 @@ class CommandLineLongString(Signature):
                             ret = True
                             self.data.append({"command" : cmdline})
                             break
+
+        return ret
+    
+class CommandLineForFilesWildCard(Signature):
+    name = "commandline_forfiles_wildcard"
+    description = "Possible use of forfiles utility with wildcard to potentially launch a utility"
+    severity = 3
+    categories = ["commands"]
+    authors = ["Kevin Ross"]
+    minimum = "1.3"
+    evented = True
+    references = "https://twitter.com/danielhbohannon/status/1130833190019653633"
+
+    def run(self):
+        ret = False
+        cmdlines = self.results["behavior"]["summary"]["executed_commands"]
+        for cmdline in cmdlines:
+            if "forfiles" in cmdline.lower() and "@file" in cmdline.lower() and "*" in cmdline:
+                ret = True
+                self.data.append({"command" : cmdline})
 
         return ret
