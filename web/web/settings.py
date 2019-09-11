@@ -37,7 +37,6 @@ if cfg.mongodb.get("enabled") and cfg.elasticsearchdb.get("enabled") and \
 
 aux_cfg =  Config("auxiliary")
 vtdl_cfg = aux_cfg.virustotaldl
-tor_cfg = aux_cfg.tor
 
 # Enable Django authentication for website
 WEB_AUTHENTICATION = False
@@ -46,6 +45,9 @@ WEB_AUTHENTICATION = False
 MONGO_HOST = cfg.mongodb.get("host", "127.0.0.1")
 MONGO_PORT = cfg.mongodb.get("port", 27017)
 MONGO_DB = cfg.mongodb.get("db", "cuckoo")
+MONGO_USER = cfg.mongodb.get("username", None)
+MONGO_PASS = cfg.mongodb.get("password", None)
+
 
 ELASTIC_HOST = cfg.elasticsearchdb.get("host", "127.0.0.1")
 ELASTIC_PORT = cfg.elasticsearchdb.get("port", 9200)
@@ -80,6 +82,14 @@ if GATEWAYS:
 
 # Enabled/Disable Zer0m0n tickbox on the submission page
 OPT_ZER0M0N = False
+
+# guacd daemon host address and port and client connection settings
+GUACD_HOST = '127.0.0.1'
+GUACD_PORT = 4822
+GUAC_PROTO = 'rdp'
+GUAC_PORT = 3389
+GUAC_USER = 'rdpuser'
+GUAC_PASS = 'rdpuserpass'
 
 # To disable comment support, change the below to False
 COMMENTS = True

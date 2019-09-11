@@ -54,8 +54,12 @@ for cfile in ["reporting", "processing", "auxiliary"]:
 if enabledconf["mongodb"]:
     import pymongo
     from bson.objectid import ObjectId
-    results_db = pymongo.MongoClient(settings.MONGO_HOST, settings.MONGO_PORT)[settings.MONGO_DB]
-
+    #results_db = pymongo.MongoClient(settings.MONGO_HOST, settings.MONGO_PORT)[settings.MONGO_DB]
+    results_db = pymongo.MongoClient( settings.MONGO_HOST,
+                                  port=settings.MONGO_PORT,
+                                  username=settings.MONGO_USER,
+                                  password=settings.MONGO_PASS,
+                                  authSource=settings.MONGO_DB)[settings.MONGO_DB]
 es_as_db = False
 if enabledconf["elasticsearchdb"]:
     from elasticsearch import Elasticsearch
@@ -750,16 +754,17 @@ def report(request, task_id):
         return render(request, "error.html",
                                   {"error": "The specified analysis does not exist"})
 
-    children = 0
     # If compressed, decompress CAPE data
-    if "CAPE" in report:
+    if "CAPE" in report and report["CAPE"]:
         try:
             report["CAPE"] = json.loads(zlib.decompress(report["CAPE"]))
         except:
             # In case compressresults processing module is not enabled
             pass
-        session = db.Session()
-        children = [c for c in session.query(Task.id,Task.package).filter(Task.parent_id == task_id)]
+
+    children = 0
+    if "CAPE_children" in report:
+        children = report["CAPE_children"]
 
     # If compressed, decompress procdump, behaviour analysis (enhanced & summary)
     if "procdump" in report:
@@ -778,6 +783,16 @@ def report(request, task_id):
             report["behavior"]["summary"] = json.loads(zlib.decompress(report["behavior"]["summary"]))
         except:
             pass
+
+    debugger_log_path = os.path.join(CUCKOO_ROOT, "storage", "analyses", str(task_id), "debugger")
+    if os.path.exists(debugger_log_path):
+        report["debugger_logs"] = {}
+        for root, dirs, files in os.walk(debugger_log_path):
+            for name in files:
+                if name.endswith('.log'):
+                    debugger_log_file = open(os.path.join(root, name), "r")
+                    report["debugger_logs"][int(name.strip('.log'))] = debugger_log_file.read()
+                    debugger_log_file.close()
 
     if settings.MOLOCH_ENABLED and "suricata" in report:
         suricata = report["suricata"]
@@ -885,7 +900,6 @@ def file(request, category, task_id, dlfile):
 
     if category == "sample":
         path = os.path.join(CUCKOO_ROOT, "storage", "binaries", dlfile)
-        #file_name += ".bin"
     elif category in ("samplezip", "droppedzip", "CAPE", "CAPEZIP"):
         # ability to download password protected zip archives
         path = ""
@@ -896,16 +910,9 @@ def file(request, category, task_id, dlfile):
         elif category.startswith("CAPE"):
             buf = os.path.join(CUCKOO_ROOT, "storage", "analyses", task_id, "CAPE", file_name)
             if os.path.isdir(buf):
-                # Backward compat for when each dropped file was in a separate dir
-                # Grab smaller file name as we store guest paths in the
-                # [orig file namoka
-                # ahora e]_info.exe
-                dfile = min(os.listdir(buf), key=len)
-                path = os.path.join(buf, dfile)
-                #file_name = dfile + ".bin"
+                path = os.path.join(buf, dlfile)
             else:
                 path = buf
-                #file_name += ".bin"
         TMPDIR = "/tmp"
         if path and category in ("samplezip", "droppedzip", "CAPEZIP"):
             try:
@@ -920,13 +927,11 @@ def file(request, category, task_id, dlfile):
         path = os.path.join(CUCKOO_ROOT, "storage", "analyses", task_id, "rtf_objects", file_name)
     elif category == "pcap":
         file_name += ".pcap"
-        # Forcefully grab dump.pcap, serve it as [sha256].pcap
         path = os.path.join(CUCKOO_ROOT, "storage", "analyses",
                             task_id, "dump.pcap")
         cd = "application/vnd.tcpdump.pcap"
     elif category == "screenshot":
         file_name += ".jpg"
-        #print file_name
         path = os.path.join(CUCKOO_ROOT, "storage", "analyses",
                             task_id, "shots", file_name)
         cd = "image/jpeg"
@@ -947,28 +952,16 @@ def file(request, category, task_id, dlfile):
         buf = os.path.join(CUCKOO_ROOT, "storage", "analyses",
                            task_id, "files", file_name)
         if os.path.isdir(buf):
-            # Backward compat for when each dropped file was in a separate dir
-            # Grab smaller file name as we store guest paths in the
-            # [orig file name]_info.exe
-            dfile = min(os.listdir(buf), key=len)
-            path = os.path.join(buf, dfile)
-            #file_name = dfile + ".bin"
+            path = os.path.join(buf, dlfile)
         else:
             path = buf
-            #file_name += ".bin"
     elif category == "procdump":
         buf = os.path.join(CUCKOO_ROOT, "storage", "analyses",
                            task_id, "procdump", file_name)
         if os.path.isdir(buf):
-            # Backward compat for when each dropped file was in a separate dir
-            # Grab smaller file name as we store guest paths in the
-            # [orig file name]_info.exe
-            dfile = min(os.listdir(buf), key=len)
-            path = os.path.join(buf, dfile)
-            #file_name = dfile + ".bin"
+            path = os.path.join(buf, dlfile)
         else:
             path = buf
-            #file_name += ".bin"
     # Just for suricata dropped files currently
     elif category == "zip":
         file_name = "files.zip"
@@ -979,6 +972,9 @@ def file(request, category, task_id, dlfile):
         file_name = "file." + dlfile
         path = os.path.join(CUCKOO_ROOT, "storage", "analyses",
                             task_id, "logs", "files", file_name)
+    elif category == "debugger_log":
+        file_name += ".log"
+        path = os.path.join(CUCKOO_ROOT, "storage", "analyses", task_id, "debugger", file_name)
     else:
         return render(request, "error.html",
                                   {"error": "Category not defined"})
@@ -991,8 +987,7 @@ def file(request, category, task_id, dlfile):
                                      content_type=cd)
     except:
         return render(request, "error.html",
-                                  {"error": "File not found"})
-
+                                  {"error": "File {} not found".format(path)})
     resp["Content-Length"] = os.path.getsize(path)
     resp["Content-Disposition"] = "attachment; filename=" + file_name
     return resp
@@ -1053,7 +1048,7 @@ def procdump(request, task_id, process_id, start, end):
         if tmp_file_path:
             os.unlink(tmp_file_path)
         if tmpdir:
-            os.rmdir(tmpdir)
+            shutil.rmtree(tmpdir)
     except:
         pass
 
@@ -1285,7 +1280,6 @@ def search(request):
 @conditional_login_required(login_required, settings.WEB_AUTHENTICATION)
 def remove(request, task_id):
     """Remove an analysis.
-    @todo: remove folder from storage.
     """
     if enabledconf["mongodb"]:
         analyses = results_db.analysis.find({"info.id": int(task_id)})
@@ -1304,6 +1298,9 @@ def remove(request, task_id):
                         results_db.calls.remove({"_id": ObjectId(call)})
                 # Delete analysis data.
                 results_db.analysis.remove({"_id": ObjectId(analysis["_id"])})
+            analyses_path = os.path.join(CUCKOO_ROOT, "storage", "analyses", task_id)
+            if os.path.exists(analyses_path):
+                shutil.rmtree(analyses_path)
         else:
             return render(request, "error.html",
                                       {"error": "The specified analysis does not exist"})

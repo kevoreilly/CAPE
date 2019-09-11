@@ -6,15 +6,15 @@
 import os
 import sys
 import time
+import json
 import logging
 import argparse
 import signal
 import multiprocessing
 
 log = logging.getLogger()
-
 sys.path.append(os.path.join(os.path.abspath(os.path.dirname(__file__)), ".."))
-
+from lib.cuckoo.common.colors import red
 from lib.cuckoo.common.config import Config
 from lib.cuckoo.common.constants import CUCKOO_ROOT
 from lib.cuckoo.core.database import Database, Task, TASK_REPORTED, TASK_COMPLETED
@@ -61,7 +61,11 @@ def process(target=None, copy_path=None, task=None, report=False, auto=False, ca
             host = repconf.mongodb.host
             port = repconf.mongodb.port
             db = repconf.mongodb.db
-            conn = MongoClient(host, port)
+            conn = MongoClient( host,
+                                port=port,
+                                username=repconf.mongodb.get("username", None),
+                                password=repconf.mongodb.get("password", None),
+                                authSource=db)
             mdata = conn[db]
             analyses = mdata.analysis.find({"info.id": int(task_id)})
             if analyses.count() > 0:
@@ -99,7 +103,6 @@ def process(target=None, copy_path=None, task=None, report=False, auto=False, ca
                         doc_type="analysis",
                         id=esid,
                     )
-
         if auto or capeproc:
             reprocess = False
         else:
@@ -123,7 +126,8 @@ def init_logging(auto=False, tid=0, debug=False):
     ch = ConsoleHandler()
     ch.setFormatter(formatter)
     log.addHandler(ch)
-    
+    if not os.path.exists(os.path.join(CUCKOO_ROOT, "log")):
+        os.makedirs(os.path.join(CUCKOO_ROOT, "log"))
     if auto:
         cfg = Config()
         if cfg.logging.enabled:
@@ -144,7 +148,7 @@ def init_logging(auto=False, tid=0, debug=False):
 
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
-def autoprocess(parallel=1):
+def autoprocess(parallel=1, failed_processing=False):
     maxcount = cfg.cuckoo.max_analysis_count
     count = 0
     db = Database()
@@ -176,7 +180,11 @@ def autoprocess(parallel=1):
 
             # If we're here, getting parallel tasks should at least
             # have one we don't know.
-            tasks = db.list_tasks(status=TASK_COMPLETED, limit=parallel,
+            if failed_processing:
+                tasks = db.list_tasks(status=TASK_FAILED_PROCESSING, limit=parallel,
+                                  order_by=Task.completed_on.asc())
+            else:
+                tasks = db.list_tasks(status=TASK_COMPLETED, limit=parallel,
                                   order_by=Task.completed_on.asc())
 
             added = False
@@ -222,26 +230,36 @@ def autoprocess(parallel=1):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("id", type=str,
-                        help="ID of the analysis to process (auto for continuous processing of unprocessed tasks).")
+    parser.add_argument("id", type=str, help="ID of the analysis to process (auto for continuous processing of unprocessed tasks).")
+    parser.add_argument("-c", "--caperesubmit", help="Allow CAPE resubmit processing.", action="store_true", required=False)
     parser.add_argument("-d", "--debug", help="Display debug messages", action="store_true", required=False)
     parser.add_argument("-r", "--report", help="Re-generate report", action="store_true", required=False)
-    parser.add_argument("-p", "--parallel", help="Number of parallel threads to use (auto mode only).", type=int,
-                        required=False, default=1)
-    parser.add_argument("-c", "--caperesubmit", help="Allow CAPE resubmit processing.", action="store_true",
-                        required=False)
+    parser.add_argument("-s", "--signatures", help="Re-execute signatures on the report", action="store_true", required=False)
+    parser.add_argument("-p", "--parallel", help="Number of parallel threads to use (auto mode only).", type=int, required=False, default=1)
+    parser.add_argument("-fp", "--failed-processing", help="reprocess failed processing", action="store_true", required=False, default=False)
     args = parser.parse_args()
-    
+
     init_yara()
     init_modules()
 
     if args.id == "auto":
         init_logging(auto=True, debug=args.debug)
-        autoprocess(parallel=args.parallel)
+        autoprocess(parallel=args.parallel, failed_processing=args.failed_processing)
     else:
+        if not os.path.exists(os.path.join(CUCKOO_ROOT, "storage", "analyses", args.id)):
+            sys.exit(red("\n[-] Analysis folder doesn't exist anymore\n"))
         init_logging(tid=args.id, debug=args.debug)
         task = Database().view_task(int(args.id))
-        process(task=task, report=args.report, capeproc=args.caperesubmit)
+        if args.signatures:
+            report = os.path.join(CUCKOO_ROOT, "storage", "analyses", args.id, "reports", "report.json")
+            if not os.path.exists(report):
+                sys.exit("File {} doest exist".format(report))
+
+            results = json.load(open(report))
+            if results is not None:
+                RunSignatures(task=task.to_dict(), results=results).run()
+        else:
+            process(task=task, report=args.report, capeproc=args.caperesubmit)
 
 if __name__ == "__main__":
     cfg = Config()

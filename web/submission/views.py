@@ -26,26 +26,31 @@ from lib.cuckoo.common.quarantine import unquarantine
 from lib.cuckoo.common.saztopcap import saz_to_pcap
 from lib.cuckoo.common.exceptions import CuckooDemuxError
 from lib.cuckoo.core.database import Database
-from lib.cuckoo.core.rooter import vpns
+from lib.cuckoo.core.rooter import vpns, _load_socks5_operational
 from utils import submit_utils
-
-try:
-    # Tags
-    from lib.cuckoo.common.dist_db import Machine, create_session
-    HAVE_DIST = True
-except Exception as e:
-    HAVE_DIST = False
-    print(e)
 
 # this required for hash searches
 FULL_DB = False
 repconf = Config("reporting")
+HAVE_DIST = False
+
+if repconf.distributed.enabled:
+    try:
+        # Tags
+        from lib.cuckoo.common.dist_db import Machine, create_session
+        HAVE_DIST = True
+    except Exception as e:
+        print(e)
+
+
 if repconf.mongodb.enabled:
     import pymongo
-    results_db = pymongo.MongoClient(
-                     repconf.mongodb.host,
-                     repconf.mongodb.port
-                 )[repconf.mongodb.db]
+    results_db = pymongo.MongoClient( repconf.mongodb.host,
+                                port=repconf.mongodb.port,
+                                username=repconf.mongodb.get("username", None),
+                                password=repconf.mongodb.get("password", None),
+                                authSource=repconf.mongodb.db
+                                )[repconf.mongodb.db]
     FULL_DB = True
 
 
@@ -81,23 +86,29 @@ def update_options(gw, orig_options):
 
 if HAVE_DIST:
     session = create_session(repconf.distributed.db)
+
 def load_vms_tags():
     all_tags = list()
-    if repconf.distributed.enabled:
+    if HAVE_DIST and repconf.distributed.enabled:
         try:
             db = session()
             for vm in db.query(Machine).all():
                 all_tags += vm.tags
             all_tags = sorted(filter(None, all_tags))
             db.close()
-        except exception as e:
+        except Exception as e:
             print(e)
+
+    for machine in Database().list_machines():
+        for tag in machine.tags:
+            all_tags.append(tag.name)
 
     return all_tags
 
 def download_file(content, request, db, task_ids, url, params, headers, service, filename, package, timeout, options, priority, machine, gateway, clock, custom, memory, enforce_timeout, referrer, tags, orig_options, task_gateways, task_machines):
     onesuccess = False
-    if content is False:
+
+    if not content:
         try:
             r = requests.get(url, params=params, headers=headers, verify=False)
         except requests.exceptions.RequestException as e:
@@ -107,8 +118,8 @@ def download_file(content, request, db, task_ids, url, params, headers, service,
             content = r.content
         elif r.status_code == 403:
             return "error", render(request, "error.html", {"error": "API key provided is not a valid {0} key or is not authorized for {0} downloads".format(service)})
-    
-    if content and len(content) == 0:
+
+    if not content:
         return "error", render(request, "error.html", {"error": "Error downloading file from {}".format(service)})
 
     try:
@@ -189,7 +200,7 @@ def index(request, resubmit_hash=False):
             if options:
                 options += ","
             options += "procdump=1"
-        
+
         if request.POST.get("process_memory"):
             if options:
                 options += ","
@@ -198,8 +209,8 @@ def index(request, resubmit_hash=False):
         if request.POST.get("import_reconstruction"):
             if options:
                 options += ","
-            options += "import_reconstruction=1"        
-            
+            options += "import_reconstruction=1"
+
         if request.POST.get("disable_cape"):
             if options:
                 options += ","
@@ -208,12 +219,17 @@ def index(request, resubmit_hash=False):
         if request.POST.get("kernel_analysis"):
             if options:
                 options += ","
-            options += "kernel_analysis=yes"   
+            options += "kernel_analysis=yes"
 
         if request.POST.get("norefer"):
             if options:
                 options += ","
             options += "norefer=1"
+
+        if request.POST.get("oldloader"):
+            if options:
+                options += ","
+            options += "loader=oldloader.exe,loader_64=oldloader_x64.exe"
 
         orig_options = options
 
@@ -226,7 +242,7 @@ def index(request, resubmit_hash=False):
                 if request.POST.get("all_gw_in_group"):
                     tgateway = settings.GATEWAYS[gateway].split(",")
                     for e in tgateway:
-                        task_gateways.append(settings.GATEWAYS[e]) 
+                        task_gateways.append(settings.GATEWAYS[e])
                 else:
                     tgateway = random.choice(settings.GATEWAYS[gateway].split(","))
                     task_gateways.append(settings.GATEWAYS[tgateway])
@@ -252,21 +268,23 @@ def index(request, resubmit_hash=False):
         else:
             task_machines.append(machine)
 
+        failed_hashes = list()
         status = "ok"
         if "hash" in request.POST and request.POST.get("hash", False) and request.POST.get("hash")[0] != '':
             resubmission_hash = request.POST.get("hash").strip()
             paths = db.sample_path_by_hash(resubmission_hash)
-            paths = filter(None, [path if os.path.exists(path) else False for path in paths])
-            if not paths and FULL_DB:
-                tasks = results_db.analysis.find({"dropped.sha256": resubmission_hash})
-                if tasks:
-                    for task in tasks:
-                        # grab task id and replace in path aka distributed cuckoo hack
-                        path = os.path.join(settings.CUCKOO_PATH, "storage", "analyses", str(task["info"]["id"]), "files", resubmission_hash)
-                        if os.path.exists(path):
-                            paths = [path]
-                            break
-            if paths:
+            if paths is not None and paths:
+                paths = filter(None, [path if os.path.exists(path) else False for path in paths])
+                if not paths and FULL_DB:
+                    tasks = results_db.analysis.find({"dropped.sha256": resubmission_hash})
+                    if tasks:
+                        for task in tasks:
+                            # grab task id and replace in path aka distributed cuckoo hack
+                            path = os.path.join(settings.CUCKOO_PATH, "storage", "analyses", str(task["info"]["id"]), "files", resubmission_hash)
+                            if os.path.exists(path):
+                                paths = [path]
+                                break
+            if paths is not None and paths:
                 content = ""
                 content = submit_utils.get_file_content(paths)
                 if content is False:
@@ -284,6 +302,9 @@ def index(request, resubmit_hash=False):
                 status, task_ids = download_file(content, request, db, task_ids, url, params, headers, "Local", path, package, timeout, options, priority, machine, gateway,
                                                  clock, custom, memory, enforce_timeout, referrer, tags, orig_options, task_gateways, task_machines)
 
+                if status != "ok":
+                    failed_hashes.append(h)
+
         elif "sample" in request.FILES:
             samples = request.FILES.getlist("sample")
             for sample in samples:
@@ -298,12 +319,12 @@ def index(request, resubmit_hash=False):
                 elif sample.size > settings.MAX_UPLOAD_SIZE:
                     return render(request, "error.html",
                                               {"error": "You uploaded a file that exceeds the maximum allowed upload size specified in web/web/local_settings.py."})
-    
+
                 # Moving sample from django temporary file to Cuckoo temporary storage to
                 # let it persist between reboot (if user like to configure it in that way).
                 path = store_temp_file(sample.read(),
                                        sample.name)
-    
+
                 for gw in task_gateways:
                     options = update_options(gw, orig_options)
 
@@ -329,7 +350,7 @@ def index(request, resubmit_hash=False):
                 elif sample.size > settings.MAX_UPLOAD_SIZE:
                     return render(request, "error.html",
                                               {"error": "You uploaded a quarantine file that exceeds the maximum allowed upload size specified in web/web/local_settings.py."})
-    
+
                 # Moving sample from django temporary file to Cuckoo temporary storage to
                 # let it persist between reboot (if user like to configure it in that way).
                 tmp_path = store_temp_file(sample.read(),
@@ -358,7 +379,7 @@ def index(request, resubmit_hash=False):
                 if not sample.size:
                     if len(samples) != 1:
                         continue
-                    
+
                     return render(request, "error.html",
                                               {"error": "You uploaded an empty PCAP file."})
                 elif sample.size > settings.MAX_UPLOAD_SIZE:
@@ -381,7 +402,7 @@ def index(request, resubmit_hash=False):
                     else:
                         return render(request, "error.html",
                                                   {"error": "Conversion from SAZ to PCAP failed."})
-       
+
                 task_id = db.add_pcap(file_path=path, priority=priority)
                 task_ids.append(task_id)
 
@@ -417,6 +438,7 @@ def index(request, resubmit_hash=False):
             else:
                 base_dir = tempfile.mkdtemp(prefix='cuckoovtdl', dir=settings.VTDL_PATH)
                 hashlist = []
+                params = {}
                 if "," in vtdl:
                     hashlist = vtdl.replace(" ", "").strip().split(",")
                 else:
@@ -434,21 +456,26 @@ def index(request, resubmit_hash=False):
                         content = submit_utils.get_file_content(paths)
 
                     headers = {}
-                    url = 'https://www.virustotal.com/intelligence/download/'
-                    params = {'apikey': settings.VTDL_INTEL_KEY, 'hash': h}
+                    params = {}
+                    url = "https://www.virustotal.com/api/v3/files/{id}/download".format(id = h)
+                    if settings.VTDL_PRIV_KEY:
+                        headers = {'x-apikey': settings.VTDL_PRIV_KEY}
+                    elif settings.VTDL_INTEL_KEY:
+                        headers = {'x-apikey': settings.VTDL_INTEL_KEY}
 
-                    if content is False:
-                        if settings.VTDL_PRIV_KEY:
-                            url = 'https://www.virustotal.com/vtapi/v2/file/download'
-                            params = {
-                                'apikey': settings.VTDL_PRIV_KEY, 'hash': h}
-
-                        status, task_ids = download_file(content, request, db, task_ids, url, params, headers, "VirusTotal", filename, package, timeout, options, priority, machine, gateway,
-                                                         clock, custom, memory, enforce_timeout, referrer, tags, orig_options, task_gateways, task_machines)
+                    if not content:
+                        status, task_ids = download_file(content, request, db, task_ids, url, params, headers,
+                                                         "VirusTotal", filename, package, timeout, options, priority,
+                                                         machine, gateway, clock, custom, memory, enforce_timeout,
+                                                         referrer, tags, orig_options, task_gateways, task_machines)
                     else:
+                        status, task_ids = download_file(content, request, db, task_ids, url, params, headers, "Local",
+                                                         filename, package, timeout, options, priority, machine,
+                                                         gateway, clock, custom, memory, enforce_timeout, referrer,
+                                                         tags, orig_options, task_gateways, task_machines)
+                if status != "ok":
+                    failed_hashes.append(h)
 
-                        status, task_ids = download_file(content, request, db, task_ids, url, params, headers, "Local", filename, package, timeout, options, priority, machine, gateway,
-                                                         clock, custom, memory, enforce_timeout, referrer, tags, orig_options, task_gateways, task_machines)
         if status == "error":
             # is render msg
             return task_ids
@@ -458,9 +485,11 @@ def index(request, resubmit_hash=False):
             # ToDo improve error msg
             tasks_count = 0
         if tasks_count > 0:
-            return render(request, "submission/complete.html",
-                          {"tasks": task_ids,
-                           "tasks_count": tasks_count})
+            data = {"tasks": task_ids, "tasks_count": tasks_count}
+            if failed_hashes:
+                data["failed_hashes"] = failed_hashes
+            return render(request, "submission/complete.html", data)
+
         else:
             return render(request, "error.html",
                           {"error": "Error adding task to Cuckoo's database."})
@@ -471,7 +500,6 @@ def index(request, resubmit_hash=False):
         enabledconf["kernel"] = settings.OPT_ZER0M0N
         enabledconf["memory"] = Config("processing").memory.get("enabled")
         enabledconf["procmemory"] = Config("processing").procmemory.get("enabled")
-        enabledconf["tor"] = Config("auxiliary").tor.get("enabled")
         if Config("auxiliary").gateways:
             enabledconf["gateways"] = True
         else:
@@ -522,10 +550,12 @@ def index(request, resubmit_hash=False):
         machines.insert(0, ("", "First available"))
         machines.insert(1, ("all", "All"))
 
+        socks5s = _load_socks5_operational()
         return render(request, "submission/index.html",
                                   {"packages": sorted(packages),
                                    "machines": machines,
                                    "vpns": vpns.values(),
+                                   "socks5s": socks5s.values(),
                                    "route": cfg.routing.route,
                                    "internet": cfg.routing.internet,
                                    "inetsim": cfg.routing.inetsim,

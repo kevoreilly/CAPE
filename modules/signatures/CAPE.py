@@ -1,16 +1,16 @@
 # CAPE - Config And Payload Extraction
 # Copyright(C) 2015 - 2018 Context Information Security. (kevin.oreilly@contextis.com)
-# 
+#
 # This program is free software : you can redistribute it and / or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-# 
+#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
 # GNU General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with this program.If not, see <http://www.gnu.org/licenses/>.
 
@@ -23,14 +23,14 @@ OPTIONAL_HEADER_MAGIC_PE            = 0x10b
 OPTIONAL_HEADER_MAGIC_PE_PLUS       = 0x20b
 IMAGE_FILE_EXECUTABLE_IMAGE         = 0x0002
 IMAGE_FILE_MACHINE_I386             = 0x014c
-IMAGE_FILE_MACHINE_AMD64            = 0x8664    
+IMAGE_FILE_MACHINE_AMD64            = 0x8664
 DOS_HEADER_LIMIT                    = 0x40
 PE_HEADER_LIMIT                     = 0x200
 
 EXECUTABLE_FLAGS                    = 0x10 | 0x20 | 0x40 | 0x80
 EXTRACTION_MIN_SIZE                 = 0x1001
 
-PLUGX_SIGNATURE		                = 0x5658
+PLUGX_SIGNATURE                     = 0x5658
 
 def IsPEImage(buf, size):
     if size < DOS_HEADER_LIMIT:
@@ -58,7 +58,7 @@ def IsPEImage(buf, size):
     if nt_headers == None:
         return False
 
-    #if ((pNtHeader->FileHeader.Machine == 0) || (pNtHeader->FileHeader.SizeOfOptionalHeader == 0 || pNtHeader->OptionalHeader.SizeOfHeaders == 0)) 
+    #if ((pNtHeader->FileHeader.Machine == 0) || (pNtHeader->FileHeader.SizeOfOptionalHeader == 0 || pNtHeader->OptionalHeader.SizeOfHeaders == 0))
     if struct.unpack("<H", nt_headers[4:6]) == 0 or struct.unpack("<H", nt_headers[20:22]) == 0 or struct.unpack("<H", nt_headers[84:86]) == 0:
         return False
 
@@ -105,6 +105,56 @@ class CAPE_Compression(Signature):
 class CAPE_RegBinary(Signature):
     name = "RegBinary"
     description = "Behavioural detection: PE binary written to registry."
+    severity = 3
+    categories = ["malware"]
+    authors = ["kevoreilly"]
+    minimum = "1.3"
+    evented = True
+
+    filter_apinames = set(["RegSetValueExA", "RegSetValueExW", "RegCreateKeyExA", "RegCreateKeyExW"])
+
+    def __init__(self, *args, **kwargs):
+        Signature.__init__(self, *args, **kwargs)
+        self.reg_binary = False
+
+    def on_call(self, call, process):
+        if call["api"] == "RegSetValueExA" or call["api"] == "RegSetValueExW":
+            buf = self.get_raw_argument(call, "Buffer")
+            size = self.get_raw_argument(call, "BufferLength")
+            self.reg_binary = IsPEImage(buf, size)
+
+    def on_complete(self):
+        if self.reg_binary == True:
+            return True
+
+class CAPE_Decryption(Signature):
+    name = "Decryption"
+    description = "Behavioural detection: Decryption of executable module(s)."
+    severity = 1
+    categories = ["malware"]
+    authors = ["kevoreilly"]
+    minimum = "1.3"
+    evented = True
+
+    filter_apinames = set(["CryptDecrypt"])
+
+    def __init__(self, *args, **kwargs):
+        Signature.__init__(self, *args, **kwargs)
+        self.encrypted_binary = False
+
+    def on_call(self, call, process):
+        if call["api"] == "CryptDecrypt":
+            buf = self.get_raw_argument(call, "Buffer")
+            size = self.get_raw_argument(call, "Length")
+            self.encrypted_binary = IsPEImage(buf, size)
+
+    def on_complete(self):
+        if self.encrypted_binary == True:
+            return True
+
+class CAPE_RegBinary(Signature):
+    name = "RegBinary"
+    description = "Behavioural detection: PE binary written to registry."
     severity = 1
     categories = ["malware"]
     authors = ["kevoreilly"]
@@ -135,14 +185,14 @@ class CAPE_Extraction(Signature):
     authors = ["kevoreilly"]
     minimum = "1.3"
     evented = True
-    
+
     def __init__(self, *args, **kwargs):
         Signature.__init__(self, *args, **kwargs)
 
     filter_apinames = set(["NtAllocateVirtualMemory","NtProtectVirtualMemory","VirtualProtectEx"])
 
     def on_call(self, call, process):
-    
+
         if process["process_name"] == "WINWORD.EXE" or process["process_name"] == "EXCEL.EXE" or process["process_name"] == "POWERPNT.EXE":
             return False
         if call["api"] == "NtAllocateVirtualMemory":
@@ -172,6 +222,7 @@ class CAPE_InjectionCreateRemoteThread(Signature):
     authors = ["JoseMi Holguin", "nex", "Optiv", "kevoreilly", "KillerInstinct"]
     minimum = "1.3"
     evented = True
+    ttp = ["T1055"]
 
     def __init__(self, *args, **kwargs):
         Signature.__init__(self, *args, **kwargs)
@@ -245,6 +296,7 @@ class CAPE_InjectionProcessHollowing(Signature):
     authors = ["glysbaysb", "Optiv", "KillerInstinct"]
     minimum = "1.3"
     evented = True
+    ttp = ["T1055", "T1093"]
 
     def __init__(self, *args, **kwargs):
         Signature.__init__(self, *args, **kwargs)
@@ -295,7 +347,7 @@ class CAPE_InjectionProcessHollowing(Signature):
                                                      self.get_name_from_pid(self.process_map[handle]), self.process_map[handle])
                 self.data.append({"Injection": desc})
                 return True
-      
+
 class CAPE_InjectionSetWindowLong(Signature):
     name = "InjectionSetWindowLong"
     description = "Behavioural detection: Injection with SetWindowLong in a remote process"
@@ -304,6 +356,7 @@ class CAPE_InjectionSetWindowLong(Signature):
     authors = ["kevoreilly"]
     minimum = "1.3"
     evented = True
+    ttp = ["T1055", "T1181"]
 
     def __init__(self, *args, **kwargs):
         Signature.__init__(self, *args, **kwargs)
@@ -337,7 +390,7 @@ class CAPE_InjectionSetWindowLong(Signature):
         elif call["api"].startswith("SetWindowLong") and call["status"] == True:
             if self.sharedmap == True and self.windowfound == True:
                 return True
-                
+
 class CAPE_Injection(Signature):
     name = "InjectionInterProcess"
     description = "Behavioural detection: Injection (inter-process)"
@@ -346,6 +399,7 @@ class CAPE_Injection(Signature):
     authors = ["kevoreilly"]
     minimum = "1.3"
     evented = True
+    ttp = ["T1055"]
 
     def __init__(self, *args, **kwargs):
         Signature.__init__(self, *args, **kwargs)
@@ -380,7 +434,7 @@ class CAPE_Injection(Signature):
             for handle in self.process_handles:
                 if handle in self.write_handles:
                     return True
-      
+
 class CAPE_EvilGrab(Signature):
     name = "EvilGrab"
     description = "Behavioural detection: EvilGrab"
@@ -389,6 +443,7 @@ class CAPE_EvilGrab(Signature):
     authors = ["kevoreilly"]
     minimum = "1.3"
     evented = True
+    ttp = ["T1219"]
 
     filter_apinames = set(["RegSetValueExA", "RegSetValueExW", "RegCreateKeyExA", "RegCreateKeyExW"])
 
@@ -402,7 +457,7 @@ class CAPE_EvilGrab(Signature):
             buf = self.get_argument(call, "SubKey")
             if buf == "Software\\rar":
                 self.reg_evilgrab_keyname = True
-            
+
         if call["api"] == "RegSetValueExA" or call["api"] == "RegSetValueExW":
             length = self.get_raw_argument(call, "BufferLength")
             if length > 0x10000 and self.reg_evilgrab_keyname == True:
@@ -423,6 +478,7 @@ class CAPE_PlugX(Signature):
     authors = ["kevoreilly"]
     minimum = "1.3"
     evented = True
+    ttp = ["T1219"]
 
     filter_apinames = set(["RtlDecompressBuffer", "memcpy"])
 
@@ -469,11 +525,12 @@ class CAPE_Doppelganging(Signature):
     authors = ["kevoreilly"]
     minimum = "1.3"
     evented = True
+    ttp = ["T1055", "T1186"]
 
     def __init__(self, *args, **kwargs):
         Signature.__init__(self, *args, **kwargs)
         self.lastprocess = None
-        
+
     filter_categories = set(["process", "thread", "filesystem",])
 
     def on_call(self, call, process):
@@ -500,6 +557,7 @@ class CAPE_TransactedHollowing(Signature):
     authors = ["kevoreilly"]
     minimum = "1.3"
     evented = True
+    ttp = ["T1055", "T1093"]
 
     filter_apinames = set(["RtlSetCurrentTransaction", "NtRollbackTransaction", "NtMapViewOfSection"])
 
