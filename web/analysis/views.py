@@ -322,6 +322,36 @@ def pending(request):
 
 @require_safe
 @conditional_login_required(login_required, settings.WEB_AUTHENTICATION)
+### load files by key as ajax to avoid huge load
+def load_files(request, task_id, category):
+    """Filters calls for call category.
+    @param task_id: cuckoo task id
+    """
+    if request.is_ajax() and category in ("cape", "dropped"):
+        files = dict()
+        # Search calls related to your PID.
+        if enabledconf["mongodb"]:
+            files = results_db.analysis.find_one({"info.id": int(task_id)}, {category: 1})
+
+            bingraph = False
+            bingraph_dict_content = {}
+            bingraph_path = os.path.join(CUCKOO_ROOT, "storage", "analyses", str(task_id), "bingraph")
+            if os.path.exists(bingraph_path):
+                for block in files.get(category, []):
+                    tmp_file = os.path.join(bingraph_path, block["sha256"]+"-ent.svg")
+                    if os.path.exists(tmp_file):
+                        with open(tmp_file, "r") as f:
+                            bingraph_dict_content.setdefault(block["sha256"], f.read())
+            if bingraph_dict_content:
+                bingraph = True
+
+            #ES isn't supported
+        return render(request, "analysis/{}/index.html".format(category), {"files": files.get(category, {}), "id": task_id, "bingraph": {"enabled": bingraph, "content": bingraph_dict_content}})
+    else:
+        raise PermissionDenied
+
+@require_safe
+@conditional_login_required(login_required, settings.WEB_AUTHENTICATION)
 def chunk(request, task_id, pid, pagenum):
     try:
         pid, pagenum = int(pid), int(pagenum)-1
